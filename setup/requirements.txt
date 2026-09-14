@@ -1,0 +1,4 @@
+pyserial>=3.5
+pillow>=9.0.0
+numpy>=1.20.0
+platformio>=6.1.0

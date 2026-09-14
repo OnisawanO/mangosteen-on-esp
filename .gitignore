@@ -1,0 +1,31 @@
+# PlatformIO build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Backup & Temporary files
+*.bak
+*.tmp
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Model Training & Data Preparation (Excluded from deployment repository)
+Mangosteen_EdgeAI/
+Mangosteen_EdgeAI-20260914T064122Z-1-001/
+Mangosteen_EdgeAI-20260914T064122Z-1-001.zip
+*.keras
+*.h5
+*.tar.gz

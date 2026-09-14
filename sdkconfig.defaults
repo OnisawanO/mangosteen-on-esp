@@ -1,0 +1,15 @@
+# Target configuration
+CONFIG_IDF_TARGET="esp32s3"
+
+# CPU Frequency - 240 MHz for maximum inference performance
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
+# Stack size for main task (TF Lite Micro needs sufficient stack)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# Compiler optimization for performance
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# FreeRTOS Tick Rate (1000 Hz for precise timing/benchmarks)
+CONFIG_FREERTOS_HZ=1000

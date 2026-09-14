@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS 
+        "main.cc" 
+        "mangosteen_model_data.cc"
+    INCLUDE_DIRS 
+        "."
+    REQUIRES 
+        esp-tflite-micro
+        esp_timer
+)
