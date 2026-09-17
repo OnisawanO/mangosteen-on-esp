@@ -62,12 +62,20 @@ TfLiteTensor* output = nullptr;
 // 3x3 Color Correction Matrix state (default OFF to preserve true natural colors)
 static bool g_enable_ccm = false;
 
+// Edge ISP Pipeline state (Gray-World AWB + Contrast Stretching, default ON)
+static bool g_enable_isp = true;
+
 #define MODEL_INPUT_WIDTH    112
 #define MODEL_INPUT_HEIGHT   112
 #define PREVIEW_BUF_SIZE     (MODEL_INPUT_WIDTH * MODEL_INPUT_HEIGHT * 2)
 
 // Preview buffer for Serial Streaming (112x112 uint16 = 25088 bytes)
 static uint8_t preview_buf[PREVIEW_BUF_SIZE];
+
+// Working buffers for 112x112 Edge ISP (12,544 bytes each)
+static uint8_t s_r_buf[MODEL_INPUT_WIDTH * MODEL_INPUT_HEIGHT];
+static uint8_t s_g_buf[MODEL_INPUT_WIDTH * MODEL_INPUT_HEIGHT];
+static uint8_t s_b_buf[MODEL_INPUT_WIDTH * MODEL_INPUT_HEIGHT];
 
 // ==============================================================================
 // 3. WEB SERVER & SOFTAP CONFIGURATION
@@ -716,6 +724,10 @@ bool initCamera() {
         s->set_whitebal(s, 1);       // Auto White Balance
         s->set_awb_gain(s, 1);
         s->set_exposure_ctrl(s, 1);  // Auto Exposure
+        s->set_lenc(s, 1);           // Lens Shading Correction (cancels dark corners/vignetting)
+        s->set_bpc(s, 1);            // Black Pixel Correction (dead pixel removal)
+        s->set_wpc(s, 1);            // White Pixel Correction (hot pixel removal)
+        s->set_raw_gma(s, 1);        // Hardware Gamma Curve (reveals shadow & midtone texture)
     }
 
     Serial.print("[Camera] Dual buffer OV2640 initialized at 240x240.\r\n");
@@ -813,15 +825,65 @@ size_t getTensorArenaUsedKB() {
 }
 
 // ==============================================================================
+// 5.9 EDGE ISP PIPELINE (GRAY-WORLD AWB + ADAPTIVE CONTRAST STRETCHING)
+// ==============================================================================
+void applyEdgeISPPipeline(uint8_t *r_buf, uint8_t *g_buf, uint8_t *b_buf, int count) {
+    if (!g_enable_isp || count <= 0) return;
+
+    // 1. Gray-World Auto White Balance (Color Constancy across room lighting)
+    uint32_t sum_r = 0, sum_g = 0, sum_b = 0;
+    for (int i = 0; i < count; i++) {
+        sum_r += r_buf[i];
+        sum_g += g_buf[i];
+        sum_b += b_buf[i];
+    }
+
+    float avg_r = (float)sum_r / count;
+    float avg_g = (float)sum_g / count;
+    float avg_b = (float)sum_b / count;
+    float avg_gray = (avg_r + avg_g + avg_b) / 3.0f;
+
+    if (avg_r > 5.0f && avg_g > 5.0f && avg_b > 5.0f) {
+        float gain_r = constrain(avg_gray / avg_r, 0.75f, 1.35f);
+        float gain_g = constrain(avg_gray / avg_g, 0.75f, 1.35f);
+        float gain_b = constrain(avg_gray / avg_b, 0.75f, 1.35f);
+
+        for (int i = 0; i < count; i++) {
+            r_buf[i] = (uint8_t)constrain((int)(r_buf[i] * gain_r), 0, 255);
+            g_buf[i] = (uint8_t)constrain((int)(g_buf[i] * gain_g), 0, 255);
+            b_buf[i] = (uint8_t)constrain((int)(b_buf[i] * gain_b), 0, 255);
+        }
+    }
+
+    // 2. Adaptive Contrast Normalization (Reveals rind and calyx texture)
+    uint8_t min_v = 255, max_v = 0;
+    for (int i = 0; i < count; i++) {
+        uint8_t lum = (uint8_t)((r_buf[i] * 77 + g_buf[i] * 150 + b_buf[i] * 29) >> 8);
+        if (lum < min_v) min_v = lum;
+        if (lum > max_v) max_v = lum;
+    }
+
+    if (max_v > min_v + 30) {
+        float scale = 255.0f / (float)(max_v - min_v);
+        float stretch = min(scale, 1.25f);
+        for (int i = 0; i < count; i++) {
+            r_buf[i] = (uint8_t)constrain((int)((r_buf[i] - min_v) * stretch), 0, 255);
+            g_buf[i] = (uint8_t)constrain((int)((g_buf[i] - min_v) * stretch), 0, 255);
+            b_buf[i] = (uint8_t)constrain((int)((b_buf[i] - min_v) * stretch), 0, 255);
+        }
+    }
+}
+
+// ==============================================================================
 // 6. INFERENCE & DOWNSAMPLING HELPER
 // ==============================================================================
 void runInferenceOnFrame(camera_fb_t *fb, int &best_class, float &max_score, float &latency_ms, float scores[3]) {
     uint16_t *pixels = (uint16_t*)fb->buf;
     int8_t *input_buf = input->data.int8;
-    int idx = 0;
-    int p_idx = 0;
+    constexpr int kTotalPixels = MODEL_INPUT_WIDTH * MODEL_INPUT_HEIGHT;
 
-    // Downsample 240x240 -> 112x112 with byte-swap and INT8 scaling
+    // Step 1: Downsample 240x240 -> 112x112 with endian swap
+    int p_idx = 0;
     for (int y = 0; y < MODEL_INPUT_HEIGHT; y++) {
         int src_y = (y * 240) / MODEL_INPUT_HEIGHT;
         int row_offset = src_y * 240;
@@ -830,26 +892,35 @@ void runInferenceOnFrame(camera_fb_t *fb, int &best_class, float &max_score, flo
             uint16_t p = pixels[row_offset + src_x];
             p = (p >> 8) | (p << 8); // Swap endianness for OV2640 DMA
 
-            uint8_t r = ((p >> 11) & 0x1F) << 3;
-            uint8_t g = ((p >> 5) & 0x3F) << 2;
-            uint8_t b = (p & 0x1F) << 3;
-
-            // Apply 3x3 Color Correction Matrix (Smartphone Calibration)
-            uint8_t r_cal = r, g_cal = g, b_cal = b;
-            if (g_enable_ccm) {
-                applyColorCorrection(r, g, b, r_cal, g_cal, b_cal);
-            }
-
-            // Save preview in big-endian format for Python viewer (calibrated if CCM enabled)
-            uint16_t p_out = g_enable_ccm ? 
-                (((uint16_t)(r_cal & 0xF8) << 8) | ((uint16_t)(g_cal & 0xFC) << 3) | (b_cal >> 3)) : p;
-            preview_buf[p_idx++] = (uint8_t)(p_out >> 8);
-            preview_buf[p_idx++] = (uint8_t)(p_out & 0xFF);
-
-            input_buf[idx++] = (int8_t)((int16_t)r_cal - 128);
-            input_buf[idx++] = (int8_t)((int16_t)g_cal - 128);
-            input_buf[idx++] = (int8_t)((int16_t)b_cal - 128);
+            s_r_buf[p_idx] = ((p >> 11) & 0x1F) << 3;
+            s_g_buf[p_idx] = ((p >> 5)  & 0x3F) << 2;
+            s_b_buf[p_idx] = (p & 0x1F) << 3;
+            p_idx++;
         }
+    }
+
+    // Step 2: Apply Edge ISP Pipeline (White Balance + Contrast Normalization)
+    applyEdgeISPPipeline(s_r_buf, s_g_buf, s_b_buf, kTotalPixels);
+
+    // Step 3: Populate preview_buf and INT8 model input
+    int idx = 0;
+    p_idx = 0;
+    for (int i = 0; i < kTotalPixels; i++) {
+        uint8_t r = s_r_buf[i];
+        uint8_t g = s_g_buf[i];
+        uint8_t b = s_b_buf[i];
+
+        if (g_enable_ccm) {
+            applyColorCorrection(r, g, b, r, g, b);
+        }
+
+        uint16_t p_out = (((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | (b >> 3));
+        preview_buf[p_idx++] = (uint8_t)(p_out >> 8);
+        preview_buf[p_idx++] = (uint8_t)(p_out & 0xFF);
+
+        input_buf[idx++] = (int8_t)((int16_t)r - 128);
+        input_buf[idx++] = (int8_t)((int16_t)g - 128);
+        input_buf[idx++] = (int8_t)((int16_t)b - 128);
     }
 
     int64_t t_start = esp_timer_get_time();
@@ -939,6 +1010,12 @@ void handleControl() {
 
     if (var == "ccm") {
         g_enable_ccm = (val != 0);
+        server.sendHeader("Access-Control-Allow-Origin", "*");
+        server.send(200, "text/plain", "OK");
+        return;
+    }
+    if (var == "isp") {
+        g_enable_isp = (val != 0);
         server.sendHeader("Access-Control-Allow-Origin", "*");
         server.send(200, "text/plain", "OK");
         return;
