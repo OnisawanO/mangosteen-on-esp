@@ -169,6 +169,7 @@ class MangosteenViewerApp:
                     self.ser.dtr = True
                     self.ser.rts = True
                     time.sleep(0.5)
+                    self.ser.write(b"s\n")  # Command ESP32 to start streaming frames
 
                 line = self.ser.readline().decode('utf-8', errors='ignore').strip()
                 if "---IMG_START---" in line:
