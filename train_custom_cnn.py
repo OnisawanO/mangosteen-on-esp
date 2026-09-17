@@ -150,14 +150,11 @@ def build_mangosteen_custom_cnn(input_shape=(96, 96, 3), num_classes=3):
     # Stage 4: 6x6x128 (Detailed rind texture refinement)
     x = depthwise_block(x, 128, strides=1, name="block_4")
     
-    # Dual Pooling Head: Combine Average Pooling (overall color) & Max Pooling (distinct spot/defect)
-    gap = layers.GlobalAveragePooling2D(name="gap")(x)
-    gmp = layers.GlobalMaxPooling2D(name="gmp")(x)
-    head = layers.Concatenate(name="pool_concat")([gap, gmp])
-    
-    head = layers.Dense(48, activation="relu", kernel_regularizer=regularizers.l2(1e-4), name="fc1")(head)
-    head = layers.Dropout(0.35, name="dropout")(head)
-    outputs = layers.Dense(num_classes, activation="softmax", name="predictions")(head)
+    # Global Average Pooling Head (100% compatible with TFLM and accelerated by ESP-NN)
+    x = layers.GlobalAveragePooling2D(name="gap")(x)
+    x = layers.Dense(64, activation="relu", kernel_regularizer=regularizers.l2(1e-4), name="fc1")(x)
+    x = layers.Dropout(0.35, name="dropout")(x)
+    outputs = layers.Dense(num_classes, activation="softmax", name="predictions")(x)
     
     model = models.Model(inputs=inputs, outputs=outputs, name="mangosteen_custom_cnn")
     return model
