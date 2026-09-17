@@ -206,7 +206,7 @@ class MangosteenViewerApp:
                             k, v = header_line.split(":", 1)
                             meta[k] = v
 
-                    img_len = int(meta.get("LEN", 18432))
+                    img_len = int(meta.get("LEN", 25088))
                     payload = bytearray()
                     while len(payload) < img_len and self.running:
                         chunk = self.ser.read(img_len - len(payload))
@@ -217,9 +217,15 @@ class MangosteenViewerApp:
                     # Consume remaining footer line
                     self.ser.readline()
 
-                    if len(payload) == 18432:
-                        # Decode RGB565 (96x96)
-                        arr = np.frombuffer(payload, dtype='>u2').reshape((96, 96))
+                    dim = None
+                    if len(payload) == 25088:
+                        dim = (112, 112)
+                    elif len(payload) == 18432:
+                        dim = (96, 96)
+
+                    if dim is not None:
+                        # Decode RGB565 (112x112 or 96x96)
+                        arr = np.frombuffer(payload, dtype='>u2').reshape(dim)
                         r = (((arr >> 11) & 0x1F) * 255 // 31).astype(np.uint8)
                         g = (((arr >> 5) & 0x3F) * 255 // 63).astype(np.uint8)
                         b = ((arr & 0x1F) * 255 // 31).astype(np.uint8)

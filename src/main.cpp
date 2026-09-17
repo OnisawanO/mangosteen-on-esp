@@ -62,8 +62,12 @@ TfLiteTensor* output = nullptr;
 // 3x3 Color Correction Matrix state (default ON)
 static bool g_enable_ccm = true;
 
-// Preview buffer for Serial Streaming (96x96 uint16 = 18432 bytes)
-static uint8_t preview_buf[96 * 96 * 2];
+#define MODEL_INPUT_WIDTH    112
+#define MODEL_INPUT_HEIGHT   112
+#define PREVIEW_BUF_SIZE     (MODEL_INPUT_WIDTH * MODEL_INPUT_HEIGHT * 2)
+
+// Preview buffer for Serial Streaming (112x112 uint16 = 25088 bytes)
+static uint8_t preview_buf[PREVIEW_BUF_SIZE];
 
 // ==============================================================================
 // 3. WEB SERVER & SOFTAP CONFIGURATION
@@ -817,12 +821,12 @@ void runInferenceOnFrame(camera_fb_t *fb, int &best_class, float &max_score, flo
     int idx = 0;
     int p_idx = 0;
 
-    // Downsample 240x240 -> 96x96 with byte-swap and INT8 scaling
-    for (int y = 0; y < 96; y++) {
-        int src_y = (y * 240) / 96;
+    // Downsample 240x240 -> 112x112 with byte-swap and INT8 scaling
+    for (int y = 0; y < MODEL_INPUT_HEIGHT; y++) {
+        int src_y = (y * 240) / MODEL_INPUT_HEIGHT;
         int row_offset = src_y * 240;
-        for (int x = 0; x < 96; x++) {
-            int src_x = (x * 240) / 96;
+        for (int x = 0; x < MODEL_INPUT_WIDTH; x++) {
+            int src_x = (x * 240) / MODEL_INPUT_WIDTH;
             uint16_t p = pixels[row_offset + src_x];
             p = (p >> 8) | (p << 8); // Swap endianness for OV2640 DMA
 
@@ -988,7 +992,7 @@ void streamSerialFrame() {
     esp_camera_fb_return(fb);
 
     Serial.println("---IMG_START---");
-    Serial.println("LEN:18432");
+    Serial.printf("LEN:%d\n", PREVIEW_BUF_SIZE);
     Serial.printf("CLASS:%s\n", kClassNames[best_class]);
     Serial.printf("CONF:%.1f\n", max_score * 100.0f);
     Serial.printf("LATENCY:%.1f\n", latency_ms);
@@ -996,7 +1000,7 @@ void streamSerialFrame() {
     Serial.printf("ARENA:%u\n", (unsigned int)getTensorArenaUsedKB());
     Serial.printf("SCORES:%.1f,%.1f,%.1f\n", scores[0] * 100.0f, scores[1] * 100.0f, scores[2] * 100.0f);
     Serial.println("---PAYLOAD---");
-    Serial.write(preview_buf, 18432);
+    Serial.write(preview_buf, PREVIEW_BUF_SIZE);
     Serial.println("\n---IMG_END---");
 }
 
