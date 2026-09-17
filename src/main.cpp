@@ -152,9 +152,30 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
     .slider { position: absolute; cursor: pointer; inset: 0; background-color: #475569; transition: .3s; border-radius: 24px; }
     .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
     input:checked + .slider { background-color: var(--accent-blue); }
-    input:checked + .slider:before { transform: translateX(20px); }
-
-    .telemetry { font-size: 0.78rem; color: var(--text-muted); font-family: monospace; text-align: center; background: rgba(15, 23, 42, 0.4); padding: 6px; border-radius: 8px; }
+    .telemetry-badges {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 5px;
+      margin-top: 10px;
+    }
+    .telemetry-pill {
+      background: #e9ecef;
+      color: #212529;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.83rem;
+      font-weight: 500;
+      padding: 4px 10px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+      border: 1px solid rgba(0,0,0,0.06);
+    }
+    .telemetry-pill span {
+      font-weight: 700;
+      color: #0f172a;
+    }
 
     /* Output Card: Teachable Machine Verdict & Multi-Class Progress Bars */
     .verdict-banner { padding: 14px; border-radius: 12px; background: rgba(15, 23, 42, 0.8); border: 1px solid var(--card-border); display: flex; align-items: center; justify-content: space-between; transition: all 0.25s ease; }
@@ -243,7 +264,12 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
           </label>
         </div>
 
-        <div class="telemetry" id="lbl-telemetry">⏱️ Latency: -- ms | Stream: -- FPS</div>
+        <div class="telemetry-badges">
+          <div class="telemetry-pill">Latency: <span id="val-latency">...</span> ms</div>
+          <div class="telemetry-pill">P95: <span id="val-p95">...</span> ms</div>
+          <div class="telemetry-pill">Tensor Arena: <span id="val-arena">...</span> KB</div>
+          <div class="telemetry-pill">FPS: <span id="val-fps">...</span></div>
+        </div>
       </div>
     </div>
 
@@ -432,6 +458,8 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
         const predClass = res.headers.get("X-Prediction");
         const conf = parseFloat(res.headers.get("X-Confidence") || "0");
         const latency = parseFloat(res.headers.get("X-Latency") || "0");
+        const p95 = parseFloat(res.headers.get("X-P95") || "0");
+        const arena = res.headers.get("X-Arena") || "--";
         const scores = (res.headers.get("X-Scores") || "0,0,0").split(",");
 
         const blob = await res.blob();
@@ -448,10 +476,18 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
             lastFpsTime = now;
           }
 
+          const valLat = document.getElementById('val-latency');
+          const valP95 = document.getElementById('val-p95');
+          const valArena = document.getElementById('val-arena');
+          const valFps = document.getElementById('val-fps');
+
+          if (valLat) valLat.textContent = (predict === 1 || chkAuto.checked) && latency > 0 ? latency.toFixed(1) : "...";
+          if (valP95) valP95.textContent = p95 > 0 ? p95.toFixed(1) : "...";
+          if (valArena) valArena.textContent = arena !== "--" ? arena : "...";
+          if (valFps) valFps.textContent = currentFps;
+
           if (predict === 1 || chkAuto.checked) {
-            updateUI(predClass, conf, latency, scores);
-          } else {
-            lblTelemetry.textContent = "⏱️ Latency: -- ms | Stream: " + currentFps + " FPS";
+            updateUI(predClass, conf, scores);
           }
 
           if (isStreaming && !isPaused) {
@@ -467,14 +503,13 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
       }
     }
 
-    function updateUI(cls, conf, latency, scores) {
+    function updateUI(cls, conf, scores) {
       if (!cls) return;
       verdictClass.textContent = cls.toUpperCase();
       verdictConf.textContent = conf.toFixed(1) + "%";
       verdictBanner.className = "verdict-banner " + cls;
 
       chipStatus.textContent = "● Live (" + conf.toFixed(0) + "%)";
-      lblTelemetry.textContent = "⏱️ Latency: " + latency.toFixed(1) + " ms | Stream: " + currentFps + " FPS";
 
       if (scores && scores.length === 3) {
         const pOver = Math.max(0, Math.min(100, parseFloat(scores[0]) || 0));
@@ -730,6 +765,50 @@ bool initTFLite() {
 }
 
 // ==============================================================================
+// 5.5 TELEMETRY & PROFILING (LATENCY, P95, TENSOR ARENA)
+// ==============================================================================
+#define LATENCY_HISTORY_MAX 50
+static float g_latency_history[LATENCY_HISTORY_MAX];
+static int g_latency_count = 0;
+static int g_latency_head = 0;
+
+void recordLatency(float lat_ms) {
+    if (lat_ms <= 0.0f) return;
+    g_latency_history[g_latency_head] = lat_ms;
+    g_latency_head = (g_latency_head + 1) % LATENCY_HISTORY_MAX;
+    if (g_latency_count < LATENCY_HISTORY_MAX) {
+        g_latency_count++;
+    }
+}
+
+float getP95Latency() {
+    if (g_latency_count == 0) return 0.0f;
+    float sorted[LATENCY_HISTORY_MAX];
+    for (int i = 0; i < g_latency_count; i++) {
+        sorted[i] = g_latency_history[i];
+    }
+    for (int i = 1; i < g_latency_count; i++) {
+        float key = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j] > key) {
+            sorted[j + 1] = sorted[j];
+            j--;
+        }
+        sorted[j + 1] = key;
+    }
+    int idx = (int)(0.95f * (g_latency_count - 1) + 0.5f);
+    if (idx >= g_latency_count) idx = g_latency_count - 1;
+    return sorted[idx];
+}
+
+size_t getTensorArenaUsedKB() {
+    if (!interpreter) return (kTensorArenaSize / 1024);
+    size_t used = interpreter->arena_used_bytes();
+    if (used == 0) return (kTensorArenaSize / 1024);
+    return (used + 1023) / 1024;
+}
+
+// ==============================================================================
 // 6. INFERENCE & DOWNSAMPLING HELPER
 // ==============================================================================
 void runInferenceOnFrame(camera_fb_t *fb, int &best_class, float &max_score, float &latency_ms, float scores[3]) {
@@ -777,6 +856,7 @@ void runInferenceOnFrame(camera_fb_t *fb, int &best_class, float &max_score, flo
     max_score = -1.0f;
     if (status == kTfLiteOk) {
         latency_ms = (float)(t_end - t_start) / 1000.0f;
+        recordLatency(latency_ms);
         for (int i = 0; i < 3; i++) {
             scores[i] = (static_cast<float>(output->data.int8[i]) - output->params.zero_point) * output->params.scale;
             if (scores[i] > max_score) {
@@ -828,10 +908,12 @@ void handleSnapshot() {
     }
 
     server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.sendHeader("Access-Control-Expose-Headers", "X-Prediction, X-Confidence, X-Latency, X-Scores");
+    server.sendHeader("Access-Control-Expose-Headers", "X-Prediction, X-Confidence, X-Latency, X-P95, X-Arena, X-Scores");
     server.sendHeader("X-Prediction", kClassNames[best_class]);
     server.sendHeader("X-Confidence", String(max_score * 100.0f, 1));
     server.sendHeader("X-Latency", String(latency_ms, 1));
+    server.sendHeader("X-P95", String(getP95Latency(), 1));
+    server.sendHeader("X-Arena", String((unsigned int)getTensorArenaUsedKB()));
     server.sendHeader("X-Scores", String(scores[0] * 100.0f, 1) + "," + String(scores[1] * 100.0f, 1) + "," + String(scores[2] * 100.0f, 1));
 
     server.setContentLength(jpg_len);
@@ -910,6 +992,8 @@ void streamSerialFrame() {
     Serial.printf("CLASS:%s\n", kClassNames[best_class]);
     Serial.printf("CONF:%.1f\n", max_score * 100.0f);
     Serial.printf("LATENCY:%.1f\n", latency_ms);
+    Serial.printf("P95:%.1f\n", getP95Latency());
+    Serial.printf("ARENA:%u\n", (unsigned int)getTensorArenaUsedKB());
     Serial.printf("SCORES:%.1f,%.1f,%.1f\n", scores[0] * 100.0f, scores[1] * 100.0f, scores[2] * 100.0f);
     Serial.println("---PAYLOAD---");
     Serial.write(preview_buf, 18432);

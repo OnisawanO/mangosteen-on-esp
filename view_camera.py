@@ -42,6 +42,7 @@ class MangosteenViewerApp:
         self.fps = 0.0
         self.fps_counter = 0
         self.fps_timer = time.time()
+        self.latency_history = []
 
         self.setup_ui()
         self.start_serial_thread()
@@ -118,10 +119,33 @@ class MangosteenViewerApp:
         self.progress = ttk.Progressbar(self.card, orient="horizontal", mode="determinate", length=400)
         self.progress.pack(fill=tk.X, pady=(10, 8))
 
-        # Details Row
-        self.lbl_latency = tk.Label(self.card, text="Inference: -- ms | Camera Stream: -- FPS", 
-                                    font=("Consolas", 9), fg="#a6adc8", bg="#24273a")
-        self.lbl_latency.pack(anchor="w")
+        # Telemetry Badges (Latency, P95, Tensor Arena, FPS)
+        self.telemetry_frame = tk.Frame(self.card, bg="#24273a")
+        self.telemetry_frame.pack(anchor="w", pady=(6, 4))
+
+        badge_style = {
+            "font": ("Consolas", 9),
+            "bg": "#e9ecef",
+            "fg": "#212529",
+            "padx": 7,
+            "pady": 2,
+            "relief": "flat",
+        }
+
+        bgrid = tk.Frame(self.telemetry_frame, bg="#24273a")
+        bgrid.pack(anchor="w")
+
+        self.badge_latency = tk.Label(bgrid, text="Latency: ... ms", **badge_style)
+        self.badge_latency.grid(row=0, column=0, padx=(0, 6), pady=2, sticky="w")
+
+        self.badge_p95 = tk.Label(bgrid, text="P95: ... ms", **badge_style)
+        self.badge_p95.grid(row=0, column=1, padx=(0, 6), pady=2, sticky="w")
+
+        self.badge_arena = tk.Label(bgrid, text="Tensor Arena: 184 KB", **badge_style)
+        self.badge_arena.grid(row=1, column=0, padx=(0, 6), pady=2, sticky="w")
+
+        self.badge_fps = tk.Label(bgrid, text="FPS: ...", **badge_style)
+        self.badge_fps.grid(row=1, column=1, padx=(0, 6), pady=2, sticky="w")
 
         self.lbl_dist = tk.Label(self.card, text="overripe: 0.0%  |  ripe: 0.0%  |  unripe: 0.0%", 
                                  font=("Consolas", 9), fg="#cad3f5", bg="#24273a")
@@ -250,11 +274,17 @@ class MangosteenViewerApp:
                 self.canvas.create_text(192, cy + hw + 16, text="วางมังคุดตรงกลางกรอบนี้",
                                         fill="#89b4fa", font=("Segoe UI", 9, "bold"))
 
+            # Update telemetry values
+            latency_str = meta_to_render.get("LATENCY", "")
+            p95_str = meta_to_render.get("P95", "")
+            arena_str = meta_to_render.get("ARENA", "184")
+            fps_str = meta_to_render.get("FPS", "--")
+
             # Update Predictions if in Auto mode or Snapshot mode
             if self.is_paused or self.auto_predict.get():
                 pred_class = meta_to_render.get("CLASS", "unknown")
                 conf = float(meta_to_render.get("CONF", 0.0))
-                latency = float(meta_to_render.get("LATENCY", 0.0))
+                latency = float(latency_str) if latency_str else 0.0
                 scores = meta_to_render.get("SCORES", "0,0,0").split(",")
 
                 color = CLASS_COLORS.get(pred_class, "#cdd6f4")
@@ -262,15 +292,35 @@ class MangosteenViewerApp:
                 self.lbl_confidence.config(text=f"ความมั่นใจ: {conf:.1f}%", fg=color)
                 self.progress["value"] = conf
 
-                fps_str = meta_to_render.get("FPS", "--")
-                self.lbl_latency.config(text=f"Inference: {latency:.1f} ms  |  Stream: {fps_str} FPS")
+                if latency > 0:
+                    self.badge_latency.config(text=f"Latency: {latency:.1f} ms")
+                    self.latency_history.append(latency)
+                    if len(self.latency_history) > 100:
+                        self.latency_history.pop(0)
+                else:
+                    self.badge_latency.config(text="Latency: ... ms")
+
+                if p95_str and float(p95_str) > 0:
+                    self.badge_p95.config(text=f"P95: {float(p95_str):.1f} ms")
+                elif self.latency_history:
+                    p95_val = float(np.percentile(self.latency_history, 95))
+                    self.badge_p95.config(text=f"P95: {p95_val:.1f} ms")
+                else:
+                    self.badge_p95.config(text="P95: ... ms")
+
+                self.badge_arena.config(text=f"Tensor Arena: {arena_str} KB" if arena_str else "Tensor Arena: ... KB")
+                self.badge_fps.config(text=f"FPS: {fps_str}")
+
                 if len(scores) == 3:
                     self.lbl_dist.config(
                         text=f"overripe: {scores[0]}%  |  ripe: {scores[1]}%  |  unripe: {scores[2]}%"
                     )
             else:
-                fps_str = meta_to_render.get("FPS", "--")
-                self.lbl_latency.config(text=f"Camera Stream: {fps_str} FPS  |  พร้อมทำนาย")
+                self.badge_fps.config(text=f"FPS: {fps_str}")
+                self.badge_arena.config(text=f"Tensor Arena: {arena_str} KB" if arena_str else "Tensor Arena: ... KB")
+                if not self.latency_history:
+                    self.badge_latency.config(text="Latency: ... ms")
+                    self.badge_p95.config(text="P95: ... ms")
 
         if self.running:
             self.root.after(20, self.update_gui)

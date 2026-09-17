@@ -1,4 +1,4 @@
-// Auto-generated Mangosteen Ripeness Classifier
+// Auto-generated from basic_cnn_int8.tflite
 #ifndef MANGOSTEEN_MODEL_DATA_H_
 #define MANGOSTEEN_MODEL_DATA_H_
 
