@@ -1,4 +1,4 @@
-// Auto-generated MangosteenNet-112 Model for ESP32-S3 (Dataset v5)
+// Auto-generated MangosteenNet-112 Model for ESP32-S3 (Dataset v6)
 // Resolution: 112x112 RGB
 // Model size: 60768 bytes (59.34 KB)
 // Classes: ['overripe', 'ripe', 'unripe']
