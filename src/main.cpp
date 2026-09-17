@@ -59,8 +59,8 @@ tflite::MicroInterpreter* interpreter = nullptr;
 TfLiteTensor* input = nullptr;
 TfLiteTensor* output = nullptr;
 
-// 3x3 Color Correction Matrix state (default ON)
-static bool g_enable_ccm = true;
+// 3x3 Color Correction Matrix state (default OFF to preserve true natural colors)
+static bool g_enable_ccm = false;
 
 #define MODEL_INPUT_WIDTH    112
 #define MODEL_INPUT_HEIGHT   112
